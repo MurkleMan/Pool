@@ -3,7 +3,7 @@
 // Flags follow llama.cpp's ggml-rpc-server so the same commands work for either:
 //   -H host (default 127.0.0.1)  -p port (default 50052)
 //   -c  keep received model parts on disk (folder from GGML_RPC_CACHE or LLAMA_CACHE)
-//   -d  dev1,dev2  devices to lend (default: every graphics card, else the CPU)
+//   -d  dev1,dev2  devices to lend (default: every graphics card, else built-in graphics, else the CPU)
 //   -t  threads for the CPU device
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -63,6 +63,12 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
             if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) devices.push_back(d);
+        }
+        // no graphics card: lend the graphics built into the processor, which
+        // uses the PC's main memory (laptops)
+        for (size_t i = 0; devices.empty() && i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_IGPU) devices.push_back(d);
         }
         if (devices.empty()) {
             ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
