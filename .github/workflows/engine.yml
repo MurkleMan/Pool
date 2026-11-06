@@ -48,6 +48,9 @@ jobs:
           $h = 'sd\ggml\include\ggml-rpc.h'
           (Get-Content $h) -replace '^static_assert\(GGML_OP_COUNT.*$', '// op numbering matches: both programs are built from this ggml' | Set-Content $h
 
+      # The graphics card does nearly all the work, so the processor part is
+      # built for any 64-bit processor. Newer instructions (AVX2 and so on)
+      # crash older processors.
       - name: Build
         shell: pwsh
         working-directory: sd
@@ -58,6 +61,7 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_CXX_FLAGS='/bigobj' `
             -DSD_CUDA=ON -DSD_RPC=ON -DSD_BUILD_SHARED_GGML_LIB=ON -DSD_SERVER_BUILD_FRONTEND=OFF -DGGML_NATIVE=OFF `
+            -DGGML_SSE42=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX512=OFF `
             -DCMAKE_CUDA_ARCHITECTURES='61;75;86;89' `
             -DCMAKE_CUDA_FLAGS='-Xcudafe "--diag_suppress=177" -Xcudafe "--diag_suppress=550"'
           cmake --build build --target sd-cli pool-rpc-server
@@ -88,6 +92,7 @@ jobs:
           body: |
             stable-diffusion.cpp ${{ inputs.sd_ref }} (commit ${{ steps.pack.outputs.short }}) for Windows with CUDA 12 and RPC,
             plus pool-rpc-server from the same source.
+          overwrite_files: true
           files: |
             ${{ steps.pack.outputs.name }}.zip
             cudart-win-cu12-x64.zip
