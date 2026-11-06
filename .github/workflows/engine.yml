@@ -47,6 +47,15 @@ jobs:
           # this same source, so they still match.
           $h = 'sd\ggml\include\ggml-rpc.h'
           (Get-Content $h) -replace '^static_assert\(GGML_OP_COUNT.*$', '// op numbering matches: both programs are built from this ggml' | Set-Content $h
+          # Splitting a model across cards, the engine sets aside 2 GB of working
+          # space on every card first, which leaves a 4 GB card almost nothing.
+          # Use 768 MB instead (SD_SPLIT_HEADROOM_MB changes it).
+          $f = (Resolve-Path 'sd\src\core\layer_split_partition.cpp').Path
+          $old = 'constexpr int64_t compute_headroom_bytes = 2ll * 1024 * 1024 * 1024;'
+          $new = 'const int64_t compute_headroom_bytes = (int64_t)(std::getenv("SD_SPLIT_HEADROOM_MB") ? std::atoll(std::getenv("SD_SPLIT_HEADROOM_MB")) : 768) * 1024 * 1024; // was a fixed 2 GiB'
+          $src = [IO.File]::ReadAllText($f)
+          if (-not $src.Contains($old)) { throw "working space line not found in $f" }
+          [IO.File]::WriteAllText($f, $src.Replace($old, $new))
 
       # The graphics card does nearly all the work, so the processor part is
       # built for any 64-bit processor. Newer instructions (AVX2 and so on)
@@ -76,6 +85,7 @@ jobs:
           Copy-Item sd\build\bin\*.exe, sd\build\bin\*.dll out\
           Copy-Item sd\LICENSE out\stable-diffusion.cpp-LICENSE.txt
           Copy-Item sd\ggml\LICENSE out\ggml-LICENSE.txt
+          "split working space 768 MB" | Set-Content out\pool-split.txt
           7z a "$name.zip" .\out\*
           New-Item -ItemType Directory cudart | Out-Null
           robocopy "${{ steps.cuda.outputs.CUDA_PATH }}\bin" cudart cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
