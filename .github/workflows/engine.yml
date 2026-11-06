@@ -1,0 +1,93 @@
+# Builds stable-diffusion.cpp for Windows with RPC turned on, plus an RPC server
+# from the same source, and publishes them as a release.
+name: Build image engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      sd_ref:
+        description: "stable-diffusion.cpp release tag or commit to build"
+        required: true
+        default: "master-1052-f5df5f8"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-cuda:
+    runs-on: windows-2022
+    timeout-minutes: 240
+    steps:
+      - name: Get build files
+        uses: actions/checkout@v6
+
+      - name: Get stable-diffusion.cpp
+        uses: actions/checkout@v6
+        with:
+          repository: leejet/stable-diffusion.cpp
+          ref: ${{ inputs.sd_ref }}
+          path: sd
+          submodules: recursive
+
+      - name: Install CUDA 12 (still supports GTX 10-series cards)
+        id: cuda
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: "12.8.1"
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - name: Add the RPC server to the build
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse pool-rpc sd\examples\pool-rpc
+          Add-Content sd\examples\CMakeLists.txt "`nadd_subdirectory(pool-rpc)"
+          # stable-diffusion.cpp adds its own operations to ggml, which trips a
+          # reminder check in ggml-rpc. sd-cli and the RPC server are built from
+          # this same source, so they still match.
+          $h = 'sd\ggml\include\ggml-rpc.h'
+          (Get-Content $h) -replace '^static_assert\(GGML_OP_COUNT.*$', '// op numbering matches: both programs are built from this ggml' | Set-Content $h
+
+      - name: Build
+        shell: pwsh
+        working-directory: sd
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_CXX_FLAGS='/bigobj' `
+            -DSD_CUDA=ON -DSD_RPC=ON -DSD_BUILD_SHARED_GGML_LIB=ON -DSD_SERVER_BUILD_FRONTEND=OFF -DGGML_NATIVE=OFF `
+            -DCMAKE_CUDA_ARCHITECTURES='61;75;86;89' `
+            -DCMAKE_CUDA_FLAGS='-Xcudafe "--diag_suppress=177" -Xcudafe "--diag_suppress=550"'
+          cmake --build build --target sd-cli pool-rpc-server
+
+      - name: Pack
+        id: pack
+        shell: pwsh
+        run: |
+          $short = (git -C sd rev-parse --short HEAD)
+          $name = "sd-${{ inputs.sd_ref }}-win-cuda12-rpc-x64"
+          New-Item -ItemType Directory out | Out-Null
+          Copy-Item sd\build\bin\*.exe, sd\build\bin\*.dll out\
+          Copy-Item sd\LICENSE out\stable-diffusion.cpp-LICENSE.txt
+          Copy-Item sd\ggml\LICENSE out\ggml-LICENSE.txt
+          7z a "$name.zip" .\out\*
+          New-Item -ItemType Directory cudart | Out-Null
+          robocopy "${{ steps.cuda.outputs.CUDA_PATH }}\bin" cudart cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          7z a cudart-win-cu12-x64.zip .\cudart\*
+          "name=$name" >> $env:GITHUB_OUTPUT
+          "short=$short" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sd-${{ inputs.sd_ref }}
+          name: sd ${{ inputs.sd_ref }} (CUDA 12, RPC)
+          body: |
+            stable-diffusion.cpp ${{ inputs.sd_ref }} (commit ${{ steps.pack.outputs.short }}) for Windows with CUDA 12 and RPC,
+            plus pool-rpc-server from the same source.
+          files: |
+            ${{ steps.pack.outputs.name }}.zip
+            cudart-win-cu12-x64.zip
